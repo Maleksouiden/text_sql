@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Assistant IA Confidentiel</title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/style.css') }}"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>Assistant IA Confidentiel</h1>
+        <p class="subtitle">Traitement local et sécurisé de vos données</p>
+      </header>
+
+      <div class="mode-title">
+        <h2>Générateur de requêtes SQL avancées</h2>
+      </div>
+
+      <div class="tabs">
+        <button class="tab-button active" data-tab="generator">
+          Générateur SQL
+        </button>
+        <button class="tab-button" data-tab="corrector">Correcteur SQL</button>
+        <button class="tab-button" data-tab="history">Historique</button>
+        <button class="tab-button" data-tab="visualization">
+          Visualisation
+        </button>
+      </div>
+
+      <div class="content">
+        <div
+          id="sql-content"
+          class="mode-content active tab-content"
+          data-tab="generator"
+        >
+          <h2>Générateur de requêtes SQL</h2>
+          <p class="description">
+            Décrivez en langage naturel la requête SQL que vous souhaitez
+            générer. Précisez le type de requête, les tables, les champs et le
+            résultat attendu.
+          </p>
+
+          <div class="sql-type-selector">
+            <label>Type de requête SQL :</label>
+            <div class="sql-type-buttons">
+              <button
+                id="sql-type-select"
+                class="sql-type-btn active"
+                data-type="SELECT"
+              >
+                SELECT (DQL)
+              </button>
+              <button id="sql-type-dml" class="sql-type-btn" data-type="DML">
+                INSERT/UPDATE/DELETE
+              </button>
+              <button id="sql-type-ddl" class="sql-type-btn" data-type="DDL">
+                CREATE/ALTER/DROP
+              </button>
+              <button
+                id="sql-type-advanced"
+                class="sql-type-btn"
+                data-type="ADVANCED"
+              >
+                Fonctions avancées
+              </button>
+            </div>
+          </div>
+
+          <div id="sql-type-info" class="sql-type-info">
+            <h3>Requête SELECT (DQL)</h3>
+            <p>Utilisez ce mode pour interroger des données existantes.</p>
+            <div class="example">
+              <p>
+                <strong>Exemple :</strong> "Je veux une requête qui sélectionne
+                les champs nom, prénom, email des tables utilisateurs et
+                commandes où la date est supérieure à '2023-01-01'"
+              </p>
+            </div>
+          </div>
+
+          <div id="sql-advanced-options" class="sql-advanced-options">
+            <div class="advanced-option">
+              <input
+                type="checkbox"
+                id="option-cte"
+                class="advanced-checkbox"
+              />
+              <label for="option-cte">Utiliser CTE (WITH)</label>
+            </div>
+            <div class="advanced-option">
+              <input
+                type="checkbox"
+                id="option-window"
+                class="advanced-checkbox"
+              />
+              <label for="option-window">Fonctions de fenêtre (WINDOW)</label>
+            </div>
+            <div class="advanced-option">
+              <input
+                type="checkbox"
+                id="option-recursive"
+                class="advanced-checkbox"
+              />
+              <label for="option-recursive">Requête récursive</label>
+            </div>
+            <div class="advanced-option">
+              <input
+                type="checkbox"
+                id="option-procedure"
+                class="advanced-checkbox"
+              />
+              <label for="option-procedure">Procédure stockée</label>
+            </div>
+            <div class="advanced-option">
+              <input
+                type="checkbox"
+                id="option-function"
+                class="advanced-checkbox"
+              />
+              <label for="option-function">Fonction</label>
+            </div>
+            <div class="advanced-option">
+              <input
+                type="checkbox"
+                id="option-trigger"
+                class="advanced-checkbox"
+              />
+              <label for="option-trigger">Trigger</label>
+            </div>
+            <div class="advanced-option">
+              <input
+                type="checkbox"
+                id="option-transaction"
+                class="advanced-checkbox"
+              />
+              <label for="option-transaction">Transaction</label>
+            </div>
+          </div>
+
+          <textarea
+            id="sql-input"
+            placeholder="Décrivez votre requête SQL ici..."
+          ></textarea>
+          <button id="generate-sql" class="action-btn">
+            Générer la requête SQL
+          </button>
+        </div>
+
+        <div class="result-container">
+          <h3>Résultat</h3>
+          <div id="detected-type" class="detected-type">
+            Type détecté : <strong>SELECT</strong>
+          </div>
+          <div id="result" class="result-box"></div>
+          <div class="result-actions">
+            <button id="copy-result" class="copy-btn">Copier</button>
+            <button id="save-result" class="copy-btn">Sauvegarder</button>
+          </div>
+        </div>
+
+        <!-- Section pour les graphiques -->
+        <div
+          id="chart-section"
+          class="chart-section tab-content"
+          data-tab="visualization"
+        >
+          <h2>Visualisation des données</h2>
+          <p class="description">
+            Configurez et générez un graphique basé sur votre requête SQL.
+          </p>
+
+          <div class="chart-config">
+            <div class="config-group">
+              <label for="chart-type">Type de graphique:</label>
+              <select id="chart-type" class="chart-select">
+                <option value="bar">Diagramme à barres</option>
+                <option value="line">Graphique linéaire</option>
+                <option value="pie">Diagramme circulaire</option>
+                <option value="doughnut">Diagramme en anneau</option>
+                <option value="radar">Graphique radar</option>
+                <option value="polarArea">Graphique en aires polaires</option>
+              </select>
+            </div>
+
+            <div class="config-group">
+              <label for="chart-labels"
+                >Champ pour les étiquettes (axe X):</label
+              >
+              <input
+                type="text"
+                id="chart-labels"
+                class="chart-input"
+                placeholder="Ex: nom, date, catégorie..."
+              />
+            </div>
+
+            <div class="config-group">
+              <label for="chart-values">Champ pour les valeurs (axe Y):</label>
+              <input
+                type="text"
+                id="chart-values"
+                class="chart-input"
+                placeholder="Ex: montant, quantité, prix..."
+              />
+            </div>
+
+            <div class="config-group">
+              <label for="chart-title">Titre du graphique:</label>
+              <input
+                type="text"
+                id="chart-title"
+                class="chart-input"
+                placeholder="Titre du graphique"
+              />
+            </div>
+
+            <div class="config-group">
+              <label for="chart-color-scheme">Schéma de couleurs:</label>
+              <select id="chart-color-scheme" class="chart-select">
+                <option value="default">Par défaut</option>
+                <option value="pastel">Pastel</option>
+                <option value="vibrant">Vif</option>
+                <option value="monochrome">Monochrome</option>
+                <option value="corporate">Corporate</option>
+              </select>
+            </div>
+
+            <button id="generate-chart" class="action-btn">
+              Générer le graphique
+            </button>
+          </div>
+
+          <div class="chart-container">
+            <canvas id="data-chart"></canvas>
+          </div>
+
+          <div class="chart-data-input">
+            <h4>Données pour le graphique</h4>
+            <p>Entrez vos données au format JSON ou CSV:</p>
+            <textarea
+              id="chart-data"
+              placeholder='[{"label": "Janvier", "value": 1000}, {"label": "Février", "value": 1500}]'
+            ></textarea>
+            <button id="update-chart-data" class="action-btn">
+              Mettre à jour le graphique
+            </button>
+          </div>
+        </div>
+
+        <!-- Section pour le correcteur SQL -->
+        <div id="corrector-section" class="tab-content" data-tab="corrector">
+          <h2>Correcteur de requêtes SQL</h2>
+          <p class="description">
+            Collez votre requête SQL pour détecter et corriger les erreurs.
+          </p>
+
+          <textarea
+            id="sql-to-correct"
+            placeholder="Exemple: SLECT * FORM users WEHRE age > 30"
+          ></textarea>
+
+          <button id="correct-sql" class="action-btn">
+            Corriger la requête SQL
+          </button>
+
+          <div class="correction-result" id="correction-result">
+            <div class="errors-container">
+              <h3>Erreurs détectées:</h3>
+              <ul id="errors-list"></ul>
+            </div>
+
+            <div class="suggestions-container">
+              <h3>Suggestions:</h3>
+              <ul id="suggestions-list"></ul>
+            </div>
+
+            <div class="corrected-query-container">
+              <h3>Requête corrigée:</h3>
+              <pre id="corrected-query"></pre>
+
+              <div class="result-actions">
+                <button id="copy-corrected" class="copy-btn">Copier</button>
+                <button id="use-corrected" class="copy-btn">
+                  Utiliser dans le générateur
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Section pour l'historique des requêtes -->
+        <div
+          id="history-section"
+          class="history-section tab-content"
+          data-tab="history"
+        >
+          <div class="history-header">
+            <h3>Historique des requêtes</h3>
+            <button id="clear-history" class="action-btn secondary small">
+              Effacer l'historique
+            </button>
+          </div>
+          <div id="history-list" class="history-list">
+            <!-- L'historique sera inséré ici par JavaScript -->
+            <div class="empty-history">Aucune requête dans l'historique</div>
+          </div>
+        </div>
+      </div>
+
+      <footer>
+        <p>
+          Toutes les données sont traitées localement et ne quittent jamais
+          votre ordinateur.
+        </p>
+        <p>© 2023 Assistant IA Confidentiel</p>
+      </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+  </body>
+</html>
