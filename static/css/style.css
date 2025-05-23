@@ -447,14 +447,14 @@ textarea {
     border-left: 3px solid #17a2b8;
 }
 
-.translation-info h4, .understanding-info h4 {
+.translation-info h4, .understanding-info h4, .schema-info h4 {
     margin-top: 0;
     margin-bottom: 5px;
     color: #17a2b8;
     font-size: 0.9em;
 }
 
-.translation-text, .understanding-text {
+.translation-text, .understanding-text, .schema-content {
     font-family: monospace;
     font-size: 0.9em;
     color: #495057;
@@ -474,6 +474,61 @@ textarea {
 
 .understanding-text {
     border-left: 3px solid #6f42c1;
+}
+
+.schema-info {
+    margin-bottom: 10px;
+}
+
+.schema-info h4 {
+    color: #28a745;
+}
+
+.schema-content {
+    border-left: 3px solid #28a745;
+}
+
+.schema-tables {
+    margin-bottom: 10px;
+}
+
+.schema-table {
+    margin: 5px 0;
+    padding: 3px 0;
+}
+
+.table-name {
+    font-weight: bold;
+    color: #007bff;
+}
+
+.table-columns {
+    color: #6c757d;
+    font-style: italic;
+}
+
+.schema-relations {
+    margin-top: 10px;
+    padding-top: 5px;
+    border-top: 1px dashed #dee2e6;
+}
+
+.relations-title {
+    font-weight: bold;
+    color: #007bff;
+    display: block;
+    margin-bottom: 5px;
+}
+
+.schema-relations ul {
+    margin: 0;
+    padding-left: 20px;
+    list-style-type: square;
+}
+
+.schema-relations li {
+    margin: 3px 0;
+    color: #6c757d;
 }
 
 /* Styles pour les suggestions d'apprentissage dans le générateur */

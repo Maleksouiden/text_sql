@@ -297,8 +297,8 @@ document.addEventListener("DOMContentLoaded", function () {
           detectedTypeSpan.innerHTML = `Type détecté : <strong>${data.detected_type}</strong>`;
         }
 
-        // Afficher l'analyse et la traduction si disponibles
-        if (data.understood_text || data.translated_text) {
+        // Afficher le schéma, l'analyse et la traduction si disponibles
+        if (data.has_schema || data.understood_text || data.translated_text) {
           // Créer ou récupérer le conteneur de traduction
           let translationContainer = document.getElementById(
             "translation-container"
@@ -314,6 +314,61 @@ document.addEventListener("DOMContentLoaded", function () {
 
           // Préparer le contenu HTML
           let contentHTML = "";
+
+          // Ajouter les informations de schéma si disponibles
+          if (data.has_schema) {
+            contentHTML += `
+              <div class="schema-info">
+                <h4>Schéma détecté:</h4>
+                <div class="schema-content">
+            `;
+
+            // Ajouter les tables
+            if (data.schema_info.tables && data.schema_info.tables.length > 0) {
+              contentHTML += `<div class="schema-tables">`;
+              data.schema_info.tables.forEach((table) => {
+                contentHTML += `<div class="schema-table">
+                  <span class="table-name">${table}</span>
+                  <span class="table-columns">(`;
+
+                // Ajouter les colonnes de la table
+                if (
+                  data.schema_info.columns[table] &&
+                  data.schema_info.columns[table].length > 0
+                ) {
+                  contentHTML += data.schema_info.columns[table].join(", ");
+                } else {
+                  contentHTML += "id, name";
+                }
+
+                contentHTML += `)</span>
+                </div>`;
+              });
+              contentHTML += `</div>`;
+            }
+
+            // Ajouter les relations
+            if (
+              data.schema_info.relations &&
+              data.schema_info.relations.length > 0
+            ) {
+              contentHTML += `<div class="schema-relations">
+                <span class="relations-title">Relations:</span>
+                <ul>`;
+
+              data.schema_info.relations.forEach((relation) => {
+                contentHTML += `<li>${relation}</li>`;
+              });
+
+              contentHTML += `</ul>
+              </div>`;
+            }
+
+            contentHTML += `
+                </div>
+              </div>
+            `;
+          }
 
           // Ajouter l'analyse des intentions si disponible
           if (

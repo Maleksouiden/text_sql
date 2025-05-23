@@ -28,12 +28,192 @@ HUGGINGFACE_API_KEY = None  # Mettre votre clé API ici si vous en avez une
 TRANSLATION_MODEL = "Helsinki-NLP/opus-mt-fr-en"
 UNDERSTANDING_MODEL = "facebook/bart-large-mnli"  # Modèle pour la compréhension des intentions
 REFORMULATION_MODEL = "facebook/bart-large-cnn"   # Modèle pour la reformulation des requêtes
+SCHEMA_EXTRACTION_MODEL = "google/flan-t5-large"  # Modèle pour l'extraction de schéma
+LANGUAGE_UNDERSTANDING_MODEL = "google/flan-t5-xl"  # Modèle pour la compréhension du langage naturel
+
+# Fonction pour extraire le schéma de la base de données à partir du texte
+def extract_schema_from_text(text):
+    """Extrait les informations de schéma (tables, colonnes, relations) à partir du texte"""
+    try:
+        # Utiliser des expressions régulières pour détecter les mentions de tables et colonnes
+        tables = {}
+        relations = []
+
+        # Détecter les mentions de tables
+        table_pattern = r'(?:table|tableau|tables|tableaux)\s+(\w+)'
+        table_matches = re.findall(table_pattern, text, re.IGNORECASE)
+
+        # Détecter les mentions de colonnes avec leur table
+        column_pattern = r'(\w+)\.(\w+)'
+        column_matches = re.findall(column_pattern, text)
+
+        # Détecter les relations entre tables
+        relation_pattern = r'(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)'
+        relation_matches = re.findall(relation_pattern, text)
+
+        # Ajouter les tables détectées
+        for table in table_matches:
+            tables[table.lower()] = []
+
+        # Ajouter les tables mentionnées dans les colonnes
+        for table, column in column_matches:
+            table = table.lower()
+            column = column.lower()
+            if table not in tables:
+                tables[table] = []
+            if column not in tables[table]:
+                tables[table].append(column)
+
+        # Ajouter les relations détectées
+        for table1, column1, table2, column2 in relation_matches:
+            relations.append({
+                'table1': table1.lower(),
+                'column1': column1.lower(),
+                'table2': table2.lower(),
+                'column2': column2.lower()
+            })
+
+            # S'assurer que les tables et colonnes sont ajoutées
+            for table, column in [(table1.lower(), column1.lower()), (table2.lower(), column2.lower())]:
+                if table not in tables:
+                    tables[table] = []
+                if column not in tables[table]:
+                    tables[table].append(column)
+
+        # Si aucune table n'a été détectée, essayer d'utiliser le modèle d'IA
+        if not tables:
+            # Préparer le prompt pour le modèle
+            prompt = f"Extrait les tables, colonnes et relations de cette phrase: {text}\nFormat: Tables: [table1(colonne1, colonne2), table2(colonne1, colonne2)], Relations: [table1.colonne1=table2.colonne2]"
+
+            # Appeler l'API HuggingFace
+            result = query_huggingface_api(SCHEMA_EXTRACTION_MODEL, prompt)
+
+            if result:
+                # Traiter le résultat
+                if isinstance(result, list) and len(result) > 0:
+                    schema_text = result[0].get("generated_text", "")
+
+                    # Extraire les tables et colonnes
+                    tables_pattern = r'Tables:\s*\[(.*?)\]'
+                    tables_match = re.search(tables_pattern, schema_text)
+                    if tables_match:
+                        tables_str = tables_match.group(1)
+                        table_entries = re.findall(r'(\w+)\(([^)]+)\)', tables_str)
+                        for table, columns_str in table_entries:
+                            columns = [col.strip() for col in columns_str.split(',')]
+                            tables[table.lower()] = [col.lower() for col in columns]
+
+                    # Extraire les relations
+                    relations_pattern = r'Relations:\s*\[(.*?)\]'
+                    relations_match = re.search(relations_pattern, schema_text)
+                    if relations_match:
+                        relations_str = relations_match.group(1)
+                        relation_entries = re.findall(r'(\w+)\.(\w+)=(\w+)\.(\w+)', relations_str)
+                        for table1, column1, table2, column2 in relation_entries:
+                            relations.append({
+                                'table1': table1.lower(),
+                                'column1': column1.lower(),
+                                'table2': table2.lower(),
+                                'column2': column2.lower()
+                            })
+
+        # Générer le schéma SQL
+        schema_sql = ""
+        for table, columns in tables.items():
+            schema_sql += f"CREATE TABLE {table} (\n"
+
+            # Ajouter un ID par défaut si aucune colonne n'est spécifiée
+            if not columns:
+                schema_sql += "    id INTEGER PRIMARY KEY,\n"
+                schema_sql += "    name TEXT\n"
+            else:
+                for i, column in enumerate(columns):
+                    # Déterminer le type de données en fonction du nom de la colonne
+                    data_type = "INTEGER" if column.endswith("_id") or column == "id" else "TEXT"
+                    primary_key = " PRIMARY KEY" if column == "id" else ""
+                    comma = "," if i < len(columns) - 1 else ""
+                    schema_sql += f"    {column} {data_type}{primary_key}{comma}\n"
+
+            schema_sql += ");\n\n"
+
+        # Ajouter les contraintes de clé étrangère
+        for relation in relations:
+            table1 = relation['table1']
+            column1 = relation['column1']
+            table2 = relation['table2']
+            column2 = relation['column2']
+
+            schema_sql += f"-- Relation: {table1}.{column1} = {table2}.{column2}\n"
+            schema_sql += f"-- ALTER TABLE {table1} ADD FOREIGN KEY ({column1}) REFERENCES {table2}({column2});\n\n"
+
+        return {
+            'tables': tables,
+            'relations': relations,
+            'schema_sql': schema_sql
+        }
+    except Exception as e:
+        print(f"Erreur lors de l'extraction du schéma: {str(e)}")
+        return {
+            'tables': {},
+            'relations': [],
+            'schema_sql': ""
+        }
+
+# Fonction pour comprendre le langage naturel et extraire les intentions
+def understand_natural_language(text, schema_info=None):
+    """Comprend le langage naturel et extrait les intentions précises"""
+    try:
+        # Préparer le prompt pour le modèle
+        prompt = f"Comprends cette requête et reformule-la en langage SQL clair: {text}"
+
+        # Ajouter les informations de schéma si disponibles
+        if schema_info and schema_info['tables']:
+            prompt += "\n\nSchéma de la base de données:"
+            for table, columns in schema_info['tables'].items():
+                prompt += f"\nTable {table}: "
+                if columns:
+                    prompt += ", ".join(columns)
+                else:
+                    prompt += "id, name"
+
+            if schema_info['relations']:
+                prompt += "\n\nRelations:"
+                for relation in schema_info['relations']:
+                    prompt += f"\n{relation['table1']}.{relation['column1']} = {relation['table2']}.{relation['column2']}"
+
+        # Ajouter des instructions spécifiques
+        prompt += "\n\nReformule cette requête en langage SQL clair, en précisant les tables et colonnes à utiliser, les conditions de jointure, les filtres, etc."
+
+        # Appeler l'API HuggingFace
+        result = query_huggingface_api(LANGUAGE_UNDERSTANDING_MODEL, prompt)
+
+        if result:
+            # Extraire le texte reformulé
+            if isinstance(result, list) and len(result) > 0:
+                if "generated_text" in result[0]:
+                    reformulated = result[0]["generated_text"]
+                    print(f"Requête reformulée par le modèle de langage: {reformulated}")
+                    return reformulated
+
+        # En cas d'échec, retourner le texte original
+        return text
+    except Exception as e:
+        print(f"Erreur lors de la compréhension du langage naturel: {str(e)}")
+        return text
 
 # Fonction pour comprendre et reformuler les requêtes utilisateur
 def understand_user_intent(text):
     """Analyse et reformule la requête utilisateur pour mieux comprendre ses intentions"""
     try:
-        # Utiliser le modèle de compréhension des intentions
+        # Étape 1: Extraire les informations de schéma du texte
+        schema_info = extract_schema_from_text(text)
+        print(f"Schéma extrait: {len(schema_info['tables'])} tables, {len(schema_info['relations'])} relations")
+
+        # Étape 2: Utiliser le modèle de compréhension du langage naturel avec le schéma
+        nl_understood_text = understand_natural_language(text, schema_info)
+        print(f"Texte compris par le modèle de langage: {nl_understood_text}")
+
+        # Étape 3: Utiliser le modèle de compréhension des intentions
         # Nous envoyons la requête avec des hypothèses pour voir laquelle correspond le mieux
         hypotheses = [
             "Cette requête concerne la sélection de données.",
@@ -53,7 +233,7 @@ def understand_user_intent(text):
         # Préparer les paires pour le modèle NLI (Natural Language Inference)
         pairs = []
         for hypothesis in hypotheses:
-            pairs.append({"text": text, "hypothesis": hypothesis})
+            pairs.append({"text": nl_understood_text, "hypothesis": hypothesis})
 
         # Appeler l'API HuggingFace pour la classification
         result = query_huggingface_api(UNDERSTANDING_MODEL, pairs)
@@ -74,15 +254,62 @@ def understand_user_intent(text):
             if best_match:
                 print(f"Intention détectée: {best_match} (score: {best_score})")
 
-                # Reformuler la requête en fonction de l'intention détectée
-                reformulated_text = reformulate_query(text, best_match)
+                # Étape 4: Reformuler la requête en fonction de l'intention détectée et du schéma
+                reformulated_text = reformulate_query_with_schema(nl_understood_text, best_match, schema_info)
                 return reformulated_text
 
-        # Si aucune intention claire n'est détectée ou en cas d'erreur, retourner le texte original
-        return text
+        # Si aucune intention claire n'est détectée, utiliser directement le texte compris par le modèle de langage
+        return nl_understood_text
     except Exception as e:
         print(f"Erreur lors de l'analyse des intentions: {str(e)}")
         return text
+
+# Fonction pour reformuler la requête en fonction de l'intention détectée et du schéma
+def reformulate_query_with_schema(text, intention, schema_info):
+    """Reformule la requête en fonction de l'intention détectée et du schéma de la base de données"""
+    try:
+        # Préparer l'entrée pour le modèle de reformulation
+        prompt = f"Intention: {intention}\nRequête originale: {text}\n"
+
+        # Ajouter les informations de schéma
+        if schema_info and schema_info['tables']:
+            prompt += "\nSchéma de la base de données:\n"
+            for table, columns in schema_info['tables'].items():
+                prompt += f"Table {table}: "
+                if columns:
+                    prompt += ", ".join(columns)
+                else:
+                    prompt += "id, name"
+                prompt += "\n"
+
+            if schema_info['relations']:
+                prompt += "\nRelations:\n"
+                for relation in schema_info['relations']:
+                    prompt += f"{relation['table1']}.{relation['column1']} = {relation['table2']}.{relation['column2']}\n"
+
+        prompt += "\nReformulation claire et précise pour générer une requête SQL avec les tables et colonnes spécifiées:"
+
+        # Appeler l'API HuggingFace pour la reformulation
+        result = query_huggingface_api(REFORMULATION_MODEL, prompt)
+
+        if result:
+            # Extraire le texte reformulé
+            if isinstance(result, list) and len(result) > 0:
+                if "summary_text" in result[0]:
+                    reformulated = result[0]["summary_text"]
+                    print(f"Requête reformulée avec schéma: {reformulated}")
+                    return reformulated
+                elif "generated_text" in result[0]:
+                    reformulated = result[0]["generated_text"]
+                    print(f"Requête reformulée avec schéma: {reformulated}")
+                    return reformulated
+
+        # En cas d'échec, utiliser la méthode de reformulation standard
+        return reformulate_query(text, intention)
+    except Exception as e:
+        print(f"Erreur lors de la reformulation avec schéma: {str(e)}")
+        # En cas d'erreur, utiliser la méthode de reformulation standard
+        return reformulate_query(text, intention)
 
 # Fonction pour reformuler la requête en fonction de l'intention détectée
 def reformulate_query(text, intention):
@@ -383,34 +610,42 @@ def query_huggingface_api(model_path, inputs, api_key=None):
 # Fonction pour générer une requête SQL à partir d'une description en langage naturel
 def generate_sql_query(description):
     """Génère une requête SQL à partir d'une description en langage naturel en utilisant un modèle pré-entraîné"""
-    # Définir les tables et schémas fictifs pour l'exemple
-    # Dans une application réelle, ces informations proviendraient de la base de données
-    schema = """
-    CREATE TABLE users (
-        id INTEGER PRIMARY KEY,
-        name TEXT,
-        email TEXT,
-        age INTEGER,
-        created_at TIMESTAMP
-    );
+    # Extraire le schéma de la base de données à partir du texte
+    extracted_schema_info = extract_schema_from_text(description)
 
-    CREATE TABLE orders (
-        id INTEGER PRIMARY KEY,
-        user_id INTEGER,
-        product_name TEXT,
-        amount DECIMAL(10, 2),
-        order_date TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id)
-    );
+    # Utiliser le schéma extrait ou un schéma par défaut
+    if extracted_schema_info['schema_sql']:
+        schema = extracted_schema_info['schema_sql']
+        print(f"Utilisation du schéma extrait du texte: {len(extracted_schema_info['tables'])} tables")
+    else:
+        # Schéma par défaut
+        schema = """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY,
+            name TEXT,
+            email TEXT,
+            age INTEGER,
+            created_at TIMESTAMP
+        );
 
-    CREATE TABLE products (
-        id INTEGER PRIMARY KEY,
-        name TEXT,
-        price DECIMAL(10, 2),
-        category TEXT,
-        stock INTEGER
-    );
-    """
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER,
+            product_name TEXT,
+            amount DECIMAL(10, 2),
+            order_date TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE products (
+            id INTEGER PRIMARY KEY,
+            name TEXT,
+            price DECIMAL(10, 2),
+            category TEXT,
+            stock INTEGER
+        );
+        """
+        print("Utilisation du schéma par défaut")
 
     # Analyser et reformuler la requête pour mieux comprendre les intentions
     understood_description = understand_user_intent(description)
@@ -779,6 +1014,9 @@ def process():
     data = request.json
     text = data.get('text', '')
 
+    # Extraire le schéma de la base de données à partir du texte
+    schema_info = extract_schema_from_text(text)
+
     # Analyser et reformuler la requête pour mieux comprendre les intentions
     understood_text = understand_user_intent(text)
 
@@ -794,6 +1032,13 @@ def process():
     # Déterminer si des options avancées ont été détectées
     has_advanced_options = any(advanced_options.values()) if advanced_options else False
 
+    # Préparer les informations de schéma pour l'affichage
+    schema_display = {
+        'tables': list(schema_info['tables'].keys()),
+        'columns': {table: columns for table, columns in schema_info['tables'].items()},
+        'relations': [f"{r['table1']}.{r['column1']} = {r['table2']}.{r['column2']}" for r in schema_info['relations']]
+    }
+
     return jsonify({
         'result': result,
         'detected_type': sql_type,
@@ -802,7 +1047,9 @@ def process():
         'history': session.get('query_history', []),
         'original_text': text,
         'understood_text': understood_text,
-        'translated_text': english_text
+        'translated_text': english_text,
+        'schema_info': schema_display,
+        'has_schema': len(schema_info['tables']) > 0
     })
 
 @app.route('/history', methods=['GET'])
