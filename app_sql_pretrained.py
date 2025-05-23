@@ -17,9 +17,15 @@ app.secret_key = 'sql_bot_secret_key'  # Clé secrète pour les sessions
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
+    # S'assurer que le dossier a les bonnes permissions
+    try:
+        os.chmod(UPLOAD_FOLDER, 0o755)  # Permissions rwxr-xr-x
+    except Exception as e:
+        print(f"Avertissement: Impossible de définir les permissions du dossier uploads: {str(e)}")
+
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB max
-ALLOWED_EXTENSIONS = {'sql', 'json'}
+app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32 MB max (augmenté)
+ALLOWED_EXTENSIONS = {'sql', 'json', 'txt', 'csv'}  # Ajout de formats supplémentaires
 
 # Configuration des modèles pré-entraînés
 MODEL_PATHS = {
@@ -52,25 +58,27 @@ def extract_schema_from_sql_file(file_path):
     """Analyse un fichier SQL et extrait le schéma de la base de données"""
     try:
         # Lire le contenu du fichier SQL
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
             sql_content = f.read()
 
         # Analyser le contenu SQL
         tables = {}
         relations = []
 
-        # Extraire les CREATE TABLE
+        # Méthode 1: Extraire les CREATE TABLE standards
         create_table_pattern = r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"\[]?(\w+)[`"\]]?\s*\((.*?)\);'
         create_table_matches = re.findall(create_table_pattern, sql_content, re.IGNORECASE | re.DOTALL)
 
         for table_name, table_content in create_table_matches:
             # Extraire les colonnes
             columns = []
-            column_pattern = r'[`"\[]?(\w+)[`"\]]?\s+(\w+)'
+            # Pattern plus flexible pour les définitions de colonnes
+            column_pattern = r'[`"\[]?(\w+)[`"\]]?\s+([A-Za-z0-9_\(\)]+)'
             column_matches = re.findall(column_pattern, table_content)
 
-            for column_name, column_type in column_matches:
-                columns.append(column_name.lower())
+            for column_name, _ in column_matches:  # Ignorer le type pour l'instant
+                if column_name.lower() not in ['primary', 'foreign', 'key', 'constraint', 'check', 'unique', 'index']:
+                    columns.append(column_name.lower())
 
             tables[table_name.lower()] = columns
 
@@ -86,6 +94,77 @@ def extract_schema_from_sql_file(file_path):
                     'column2': ref_column.lower()
                 })
 
+        # Méthode 2: Si aucune table n'est trouvée, essayer un autre pattern (format phpMyAdmin)
+        if not tables:
+            # Pattern pour les exports phpMyAdmin
+            create_table_pattern2 = r'CREATE TABLE `(\w+)`\s*\(([\s\S]*?)\)\s*ENGINE'
+            create_table_matches2 = re.findall(create_table_pattern2, sql_content)
+
+            for table_name, table_content in create_table_matches2:
+                columns = []
+                # Pattern pour les colonnes dans les exports phpMyAdmin
+                column_pattern2 = r'`(\w+)`\s+([^,\n]+)'
+                column_matches2 = re.findall(column_pattern2, table_content)
+
+                for column_name, _ in column_matches2:
+                    columns.append(column_name.lower())
+
+                tables[table_name.lower()] = columns
+
+                # Extraire les clés étrangères
+                fk_pattern2 = r'CONSTRAINT\s+`[^`]+`\s+FOREIGN\s+KEY\s*\(`(\w+)`\)\s*REFERENCES\s+`(\w+)`\s*\(`(\w+)`\)'
+                fk_matches2 = re.findall(fk_pattern2, table_content, re.IGNORECASE)
+
+                for fk_column, ref_table, ref_column in fk_matches2:
+                    relations.append({
+                        'table1': table_name.lower(),
+                        'column1': fk_column.lower(),
+                        'table2': ref_table.lower(),
+                        'column2': ref_column.lower()
+                    })
+
+        # Méthode 3: Rechercher les noms de tables dans les commentaires ou autres parties du fichier
+        if not tables:
+            # Chercher des mentions de tables dans les commentaires
+            table_mentions = re.findall(r'--\s*Table\s+structure\s+for\s+(?:table\s+)?[`"\']?(\w+)[`"\']?', sql_content, re.IGNORECASE)
+            table_mentions += re.findall(r'--\s*Data\s+for\s+(?:table\s+)?[`"\']?(\w+)[`"\']?', sql_content, re.IGNORECASE)
+
+            # Chercher des INSERT INTO qui peuvent révéler des noms de tables
+            insert_mentions = re.findall(r'INSERT\s+INTO\s+[`"\']?(\w+)[`"\']?', sql_content, re.IGNORECASE)
+
+            # Combiner et dédupliquer
+            all_tables = set(table_mentions + insert_mentions)
+
+            for table_name in all_tables:
+                # Pour chaque table mentionnée, essayer de trouver les colonnes dans les INSERT
+                columns = []
+                insert_columns_pattern = r'INSERT\s+INTO\s+[`"\']?' + re.escape(table_name) + r'[`"\']?\s*\(([^)]+)\)'
+                insert_columns_matches = re.findall(insert_columns_pattern, sql_content, re.IGNORECASE)
+
+                for columns_str in insert_columns_matches:
+                    # Extraire les noms de colonnes
+                    col_names = re.findall(r'[`"\']?(\w+)[`"\']?', columns_str)
+                    columns.extend([col.lower() for col in col_names])
+
+                # Dédupliquer les colonnes
+                columns = list(set(columns))
+
+                # Si aucune colonne n'est trouvée, ajouter des colonnes par défaut
+                if not columns:
+                    columns = ['id', 'name']
+
+                tables[table_name.lower()] = columns
+
+        # Si toujours aucune table n'est trouvée, créer une table par défaut basée sur le nom du fichier
+        if not tables:
+            file_name = os.path.basename(file_path)
+            table_name = os.path.splitext(file_name)[0].replace('-', '_').replace(' ', '_').lower()
+
+            # Ajouter une table par défaut
+            tables[table_name] = ['id', 'name', 'description', 'created_at']
+
+            print(f"Aucune table trouvée dans le fichier SQL. Création d'une table par défaut: {table_name}")
+
         # Générer le schéma SQL
         schema_sql = ""
         for table, columns in tables.items():
@@ -94,7 +173,15 @@ def extract_schema_from_sql_file(file_path):
             # Ajouter les colonnes
             for i, column in enumerate(columns):
                 # Déterminer le type de données en fonction du nom de la colonne
-                data_type = "INTEGER" if column.endswith("_id") or column == "id" else "TEXT"
+                if column.endswith("_id") or column == "id":
+                    data_type = "INTEGER"
+                elif column.endswith("_date") or column.endswith("_at") or column == "date":
+                    data_type = "TIMESTAMP"
+                elif column.endswith("_price") or column.endswith("_amount") or column.endswith("_cost"):
+                    data_type = "DECIMAL(10, 2)"
+                else:
+                    data_type = "TEXT"
+
                 primary_key = " PRIMARY KEY" if column == "id" else ""
                 comma = "," if i < len(columns) - 1 else ""
                 schema_sql += f"    {column} {data_type}{primary_key}{comma}\n"
@@ -118,10 +205,13 @@ def extract_schema_from_sql_file(file_path):
         }
     except Exception as e:
         print(f"Erreur lors de l'analyse du fichier SQL: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {
             'tables': {},
             'relations': [],
-            'schema_sql': ""
+            'schema_sql': "",
+            'error': str(e)
         }
 
 # Fonction pour analyser un fichier JSON et extraire le schéma
@@ -129,10 +219,25 @@ def extract_schema_from_json_file(file_path):
     """Analyse un fichier JSON et extrait le schéma de la base de données"""
     try:
         # Lire le contenu du fichier JSON
-        with open(file_path, 'r', encoding='utf-8') as f:
-            json_content = json.load(f)
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            try:
+                json_content = json.load(f)
+            except json.JSONDecodeError as e:
+                print(f"Erreur de décodage JSON: {str(e)}")
+                # Essayer de réparer le JSON
+                f.seek(0)  # Retourner au début du fichier
+                content = f.read()
+                # Remplacer les caractères problématiques
+                content = content.replace("'", '"').replace('\n', ' ').replace('\r', '')
+                try:
+                    json_content = json.loads(content)
+                except:
+                    # Si toujours pas possible, créer une structure par défaut
+                    file_name = os.path.basename(file_path)
+                    table_name = os.path.splitext(file_name)[0].replace('-', '_').replace(' ', '_').lower()
+                    return create_default_schema(table_name)
 
-        # Vérifier si le JSON contient un schéma de base de données
+        # Méthode 1: Vérifier si le JSON contient un schéma de base de données explicite
         if isinstance(json_content, dict) and 'tables' in json_content:
             # Format attendu: {"tables": {"table1": ["col1", "col2"], ...}, "relations": [{"table1": "t1", "column1": "c1", "table2": "t2", "column2": "c2"}, ...]}
             tables = json_content.get('tables', {})
@@ -146,7 +251,15 @@ def extract_schema_from_json_file(file_path):
                 # Ajouter les colonnes
                 for i, column in enumerate(columns):
                     # Déterminer le type de données en fonction du nom de la colonne
-                    data_type = "INTEGER" if column.endswith("_id") or column == "id" else "TEXT"
+                    if column.endswith("_id") or column == "id":
+                        data_type = "INTEGER"
+                    elif column.endswith("_date") or column.endswith("_at") or column == "date":
+                        data_type = "TIMESTAMP"
+                    elif column.endswith("_price") or column.endswith("_amount") or column.endswith("_cost"):
+                        data_type = "DECIMAL(10, 2)"
+                    else:
+                        data_type = "TEXT"
+
                     primary_key = " PRIMARY KEY" if column == "id" else ""
                     comma = "," if i < len(columns) - 1 else ""
                     schema_sql += f"    {column} {data_type}{primary_key}{comma}\n"
@@ -169,16 +282,50 @@ def extract_schema_from_json_file(file_path):
                 'relations': relations,
                 'schema_sql': schema_sql
             }
+
+        # Méthode 2: Analyser une liste d'objets (données)
         elif isinstance(json_content, list) and len(json_content) > 0:
             # Format attendu: liste d'objets représentant des données
-            # Extraire le schéma à partir des données
             tables = {}
+
+            # Analyser le premier objet pour déterminer la structure
             sample_object = json_content[0]
 
             if isinstance(sample_object, dict):
                 # Créer une table pour ce type d'objet
-                table_name = "data"
-                columns = list(sample_object.keys())
+                file_name = os.path.basename(file_path)
+                table_name = os.path.splitext(file_name)[0].replace('-', '_').replace(' ', '_').lower()
+
+                # Analyser tous les objets pour trouver toutes les colonnes possibles
+                all_columns = set()
+                column_types = {}
+
+                for obj in json_content[:100]:  # Limiter à 100 objets pour l'analyse
+                    if isinstance(obj, dict):
+                        for key, value in obj.items():
+                            all_columns.add(key)
+
+                            # Déterminer le type de données
+                            if key not in column_types:
+                                if isinstance(value, int):
+                                    column_types[key] = "INTEGER"
+                                elif isinstance(value, float):
+                                    column_types[key] = "REAL"
+                                elif isinstance(value, bool):
+                                    column_types[key] = "BOOLEAN"
+                                elif isinstance(value, dict):
+                                    column_types[key] = "JSON"
+                                elif isinstance(value, list):
+                                    column_types[key] = "JSON"
+                                else:
+                                    column_types[key] = "TEXT"
+
+                # Convertir en liste et s'assurer que 'id' est en premier si présent
+                columns = list(all_columns)
+                if 'id' in columns:
+                    columns.remove('id')
+                    columns.insert(0, 'id')
+
                 tables[table_name] = columns
 
                 # Générer le schéma SQL
@@ -186,12 +333,15 @@ def extract_schema_from_json_file(file_path):
 
                 # Ajouter les colonnes
                 for i, column in enumerate(columns):
-                    # Déterminer le type de données en fonction de la valeur
-                    value = sample_object[column]
-                    if isinstance(value, int):
+                    # Utiliser le type détecté ou un type par défaut basé sur le nom
+                    if column in column_types:
+                        data_type = column_types[column]
+                    elif column.endswith("_id") or column == "id":
                         data_type = "INTEGER"
-                    elif isinstance(value, float):
-                        data_type = "REAL"
+                    elif column.endswith("_date") or column.endswith("_at") or column == "date":
+                        data_type = "TIMESTAMP"
+                    elif column.endswith("_price") or column.endswith("_amount") or column.endswith("_cost"):
+                        data_type = "DECIMAL(10, 2)"
                     else:
                         data_type = "TEXT"
 
@@ -207,19 +357,107 @@ def extract_schema_from_json_file(file_path):
                     'schema_sql': schema_sql
                 }
 
-        # Format non reconnu
-        return {
-            'tables': {},
-            'relations': [],
-            'schema_sql': ""
-        }
+        # Méthode 3: Analyser un objet unique (peut-être une structure de base de données)
+        elif isinstance(json_content, dict):
+            # Essayer de détecter si c'est une structure de base de données
+            tables = {}
+            relations = []
+
+            # Vérifier si les clés de premier niveau pourraient être des noms de tables
+            for key, value in json_content.items():
+                if isinstance(value, dict):
+                    # Pourrait être une table avec des colonnes comme clés
+                    columns = list(value.keys())
+                    tables[key] = columns
+                elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                    # Pourrait être une liste d'enregistrements
+                    columns = set()
+                    for item in value[:100]:  # Limiter à 100 items
+                        if isinstance(item, dict):
+                            columns.update(item.keys())
+                    tables[key] = list(columns)
+
+            # Si des tables ont été détectées, générer le schéma SQL
+            if tables:
+                schema_sql = ""
+                for table, columns in tables.items():
+                    schema_sql += f"CREATE TABLE {table} (\n"
+
+                    # Ajouter les colonnes
+                    for i, column in enumerate(columns):
+                        # Déterminer le type de données en fonction du nom de la colonne
+                        if column.endswith("_id") or column == "id":
+                            data_type = "INTEGER"
+                        elif column.endswith("_date") or column.endswith("_at") or column == "date":
+                            data_type = "TIMESTAMP"
+                        elif column.endswith("_price") or column.endswith("_amount") or column.endswith("_cost"):
+                            data_type = "DECIMAL(10, 2)"
+                        else:
+                            data_type = "TEXT"
+
+                        primary_key = " PRIMARY KEY" if column == "id" else ""
+                        comma = "," if i < len(columns) - 1 else ""
+                        schema_sql += f"    {column} {data_type}{primary_key}{comma}\n"
+
+                    schema_sql += ");\n\n"
+
+                # Essayer de détecter les relations
+                for table, columns in tables.items():
+                    for column in columns:
+                        if column.endswith("_id") and column != "id":
+                            # Essayer de deviner la table référencée
+                            ref_table = column[:-3]  # Enlever "_id"
+                            if ref_table in tables:
+                                relations.append({
+                                    'table1': table,
+                                    'column1': column,
+                                    'table2': ref_table,
+                                    'column2': 'id'
+                                })
+
+                                schema_sql += f"-- Relation: {table}.{column} = {ref_table}.id\n"
+                                schema_sql += f"-- ALTER TABLE {table} ADD FOREIGN KEY ({column}) REFERENCES {ref_table}(id);\n\n"
+
+                return {
+                    'tables': tables,
+                    'relations': relations,
+                    'schema_sql': schema_sql
+                }
+
+        # Si aucun format n'est reconnu, créer une structure par défaut
+        file_name = os.path.basename(file_path)
+        table_name = os.path.splitext(file_name)[0].replace('-', '_').replace(' ', '_').lower()
+        return create_default_schema(table_name)
+
     except Exception as e:
         print(f"Erreur lors de l'analyse du fichier JSON: {str(e)}")
-        return {
-            'tables': {},
-            'relations': [],
-            'schema_sql': ""
-        }
+        import traceback
+        traceback.print_exc()
+
+        # Créer une structure par défaut en cas d'erreur
+        file_name = os.path.basename(file_path)
+        table_name = os.path.splitext(file_name)[0].replace('-', '_').replace(' ', '_').lower()
+        return create_default_schema(table_name)
+
+# Fonction pour créer un schéma par défaut
+def create_default_schema(table_name):
+    """Crée un schéma par défaut pour une table donnée"""
+    tables = {table_name: ['id', 'name', 'description', 'created_at']}
+    schema_sql = f"""CREATE TABLE {table_name} (
+    id INTEGER PRIMARY KEY,
+    name TEXT,
+    description TEXT,
+    created_at TIMESTAMP
+);
+"""
+
+    print(f"Création d'un schéma par défaut pour la table: {table_name}")
+
+    return {
+        'tables': tables,
+        'relations': [],
+        'schema_sql': schema_sql
+    }
 
 # Fonction pour extraire le schéma de la base de données à partir du texte
 def extract_schema_from_text(text):
@@ -1342,29 +1580,84 @@ def upload_schema():
                 'message': f'Les extensions autorisées sont: {", ".join(ALLOWED_EXTENSIONS)}'
             })
 
+        # Créer le dossier d'upload s'il n'existe pas
+        if not os.path.exists(app.config['UPLOAD_FOLDER']):
+            try:
+                os.makedirs(app.config['UPLOAD_FOLDER'])
+                os.chmod(app.config['UPLOAD_FOLDER'], 0o755)  # Permissions rwxr-xr-x
+            except Exception as e:
+                print(f"Erreur lors de la création du dossier uploads: {str(e)}")
+                # Continuer malgré l'erreur
+
         # Sauvegarder le fichier
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(file_path)
+        try:
+            filename = secure_filename(file.filename)
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(file_path)
+
+            # Vérifier que le fichier a bien été sauvegardé
+            if not os.path.exists(file_path):
+                return jsonify({
+                    'success': False,
+                    'error': 'Erreur de sauvegarde',
+                    'message': 'Le fichier n\'a pas pu être sauvegardé sur le serveur'
+                })
+        except Exception as e:
+            print(f"Erreur lors de la sauvegarde du fichier: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({
+                'success': False,
+                'error': 'Erreur de sauvegarde',
+                'message': f'Erreur lors de la sauvegarde du fichier: {str(e)}'
+            })
 
         # Extraire le schéma selon le type de fichier
         schema_info = None
-        if filename.endswith('.sql'):
-            schema_info = extract_schema_from_sql_file(file_path)
-        elif filename.endswith('.json'):
-            schema_info = extract_schema_from_json_file(file_path)
+        try:
+            if filename.lower().endswith('.sql'):
+                schema_info = extract_schema_from_sql_file(file_path)
+            elif filename.lower().endswith('.json'):
+                schema_info = extract_schema_from_json_file(file_path)
+            elif filename.lower().endswith('.txt') or filename.lower().endswith('.csv'):
+                # Pour les fichiers texte, essayer d'abord comme SQL puis comme JSON
+                schema_info = extract_schema_from_sql_file(file_path)
+                if not schema_info or not schema_info.get('tables'):
+                    schema_info = extract_schema_from_json_file(file_path)
+            else:
+                # Essayer de deviner le format en fonction du contenu
+                with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read(1000)  # Lire les 1000 premiers caractères
+                    if 'CREATE TABLE' in content or 'INSERT INTO' in content:
+                        schema_info = extract_schema_from_sql_file(file_path)
+                    elif '{' in content or '[' in content:
+                        schema_info = extract_schema_from_json_file(file_path)
+                    else:
+                        # Format non reconnu, créer un schéma par défaut
+                        table_name = os.path.splitext(filename)[0].replace('-', '_').replace(' ', '_').lower()
+                        schema_info = create_default_schema(table_name)
+        except Exception as e:
+            print(f"Erreur lors de l'extraction du schéma: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+            # Créer un schéma par défaut en cas d'erreur
+            table_name = os.path.splitext(filename)[0].replace('-', '_').replace(' ', '_').lower()
+            schema_info = create_default_schema(table_name)
 
         # Vérifier si le schéma a été extrait avec succès
-        if not schema_info or not schema_info['tables']:
-            return jsonify({
-                'success': False,
-                'error': 'Schéma non extrait',
-                'message': 'Impossible d\'extraire le schéma de la base de données à partir du fichier'
-            })
+        if not schema_info or not schema_info.get('tables'):
+            # Créer un schéma par défaut
+            table_name = os.path.splitext(filename)[0].replace('-', '_').replace(' ', '_').lower()
+            schema_info = create_default_schema(table_name)
 
         # Stocker le schéma en session
-        session['custom_schema'] = schema_info
-        session.modified = True
+        try:
+            session['custom_schema'] = schema_info
+            session.modified = True
+        except Exception as e:
+            print(f"Erreur lors du stockage du schéma en session: {str(e)}")
+            # Continuer malgré l'erreur
 
         # Préparer les informations de schéma pour l'affichage
         schema_display = {
@@ -1380,6 +1673,9 @@ def upload_schema():
             'has_schema': True
         })
     except Exception as e:
+        print(f"Erreur globale lors de l'upload du fichier: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'success': False,
             'error': str(e),
