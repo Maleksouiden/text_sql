@@ -34,6 +34,7 @@
         <button class="tab-button" data-tab="visualization">
           Visualisation
         </button>
+        <button class="tab-button" data-tab="schema">Schéma BDD</button>
       </div>
 
       <div class="content">
@@ -312,6 +313,76 @@
           <div id="history-list" class="history-list">
             <!-- L'historique sera inséré ici par JavaScript -->
             <div class="empty-history">Aucune requête dans l'historique</div>
+          </div>
+        </div>
+
+        <!-- Section pour l'importation de schéma -->
+        <div
+          id="schema-section"
+          class="schema-section tab-content"
+          data-tab="schema"
+        >
+          <h2>Importation de schéma de base de données</h2>
+          <p class="description">
+            Importez votre propre schéma de base de données pour générer des
+            requêtes SQL adaptées à votre structure.
+          </p>
+
+          <div class="schema-upload">
+            <h3>Importer un fichier SQL ou JSON</h3>
+            <p>
+              Formats supportés: .sql (fichier de création de tables) ou .json
+              (description de schéma)
+            </p>
+
+            <form id="schema-upload-form" enctype="multipart/form-data">
+              <div class="file-input-container">
+                <input
+                  type="file"
+                  id="schema-file"
+                  name="file"
+                  accept=".sql,.json"
+                />
+                <label for="schema-file" class="file-input-label"
+                  >Choisir un fichier</label
+                >
+                <span id="file-name" class="file-name"
+                  >Aucun fichier sélectionné</span
+                >
+              </div>
+
+              <button type="submit" id="upload-schema" class="action-btn">
+                Importer le schéma
+              </button>
+            </form>
+
+            <div id="upload-result" class="upload-result"></div>
+          </div>
+
+          <div class="schema-display">
+            <h3>Schéma actuel</h3>
+            <div id="current-schema" class="current-schema">
+              <div class="empty-schema">Aucun schéma personnalisé importé</div>
+            </div>
+
+            <button id="clear-schema" class="action-btn secondary">
+              Effacer le schéma
+            </button>
+          </div>
+
+          <div class="schema-format">
+            <h3>Format JSON attendu</h3>
+            <pre class="schema-example">
+{
+  "tables": {
+    "users": ["id", "name", "email", "age"],
+    "orders": ["id", "user_id", "product_name", "amount", "order_date"]
+  },
+  "relations": [
+    {"table1": "orders", "column1": "user_id", "table2": "users", "column2": "id"}
+  ]
+}
+            </pre>
           </div>
         </div>
       </div>

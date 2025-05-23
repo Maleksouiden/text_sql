@@ -6,9 +6,20 @@ import json
 import sqlparse
 import requests
 import html
+import tempfile
+import sqlite3
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.secret_key = 'sql_bot_secret_key'  # Clé secrète pour les sessions
+
+# Configuration pour l'upload de fichiers
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB max
+ALLOWED_EXTENSIONS = {'sql', 'json'}
 
 # Configuration des modèles pré-entraînés
 MODEL_PATHS = {
@@ -30,6 +41,185 @@ UNDERSTANDING_MODEL = "facebook/bart-large-mnli"  # Modèle pour la compréhensi
 REFORMULATION_MODEL = "facebook/bart-large-cnn"   # Modèle pour la reformulation des requêtes
 SCHEMA_EXTRACTION_MODEL = "google/flan-t5-large"  # Modèle pour l'extraction de schéma
 LANGUAGE_UNDERSTANDING_MODEL = "google/flan-t5-xl"  # Modèle pour la compréhension du langage naturel
+
+# Fonction pour vérifier si un fichier a une extension autorisée
+def allowed_file(filename):
+    """Vérifie si le fichier a une extension autorisée"""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# Fonction pour analyser un fichier SQL et extraire le schéma
+def extract_schema_from_sql_file(file_path):
+    """Analyse un fichier SQL et extrait le schéma de la base de données"""
+    try:
+        # Lire le contenu du fichier SQL
+        with open(file_path, 'r', encoding='utf-8') as f:
+            sql_content = f.read()
+
+        # Analyser le contenu SQL
+        tables = {}
+        relations = []
+
+        # Extraire les CREATE TABLE
+        create_table_pattern = r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"\[]?(\w+)[`"\]]?\s*\((.*?)\);'
+        create_table_matches = re.findall(create_table_pattern, sql_content, re.IGNORECASE | re.DOTALL)
+
+        for table_name, table_content in create_table_matches:
+            # Extraire les colonnes
+            columns = []
+            column_pattern = r'[`"\[]?(\w+)[`"\]]?\s+(\w+)'
+            column_matches = re.findall(column_pattern, table_content)
+
+            for column_name, column_type in column_matches:
+                columns.append(column_name.lower())
+
+            tables[table_name.lower()] = columns
+
+            # Extraire les clés étrangères
+            fk_pattern = r'FOREIGN\s+KEY\s*\(\s*[`"\[]?(\w+)[`"\]]?\s*\)\s*REFERENCES\s+[`"\[]?(\w+)[`"\]]?\s*\(\s*[`"\[]?(\w+)[`"\]]?\s*\)'
+            fk_matches = re.findall(fk_pattern, table_content, re.IGNORECASE)
+
+            for fk_column, ref_table, ref_column in fk_matches:
+                relations.append({
+                    'table1': table_name.lower(),
+                    'column1': fk_column.lower(),
+                    'table2': ref_table.lower(),
+                    'column2': ref_column.lower()
+                })
+
+        # Générer le schéma SQL
+        schema_sql = ""
+        for table, columns in tables.items():
+            schema_sql += f"CREATE TABLE {table} (\n"
+
+            # Ajouter les colonnes
+            for i, column in enumerate(columns):
+                # Déterminer le type de données en fonction du nom de la colonne
+                data_type = "INTEGER" if column.endswith("_id") or column == "id" else "TEXT"
+                primary_key = " PRIMARY KEY" if column == "id" else ""
+                comma = "," if i < len(columns) - 1 else ""
+                schema_sql += f"    {column} {data_type}{primary_key}{comma}\n"
+
+            schema_sql += ");\n\n"
+
+        # Ajouter les contraintes de clé étrangère
+        for relation in relations:
+            table1 = relation['table1']
+            column1 = relation['column1']
+            table2 = relation['table2']
+            column2 = relation['column2']
+
+            schema_sql += f"-- Relation: {table1}.{column1} = {table2}.{column2}\n"
+            schema_sql += f"-- ALTER TABLE {table1} ADD FOREIGN KEY ({column1}) REFERENCES {table2}({column2});\n\n"
+
+        return {
+            'tables': tables,
+            'relations': relations,
+            'schema_sql': schema_sql
+        }
+    except Exception as e:
+        print(f"Erreur lors de l'analyse du fichier SQL: {str(e)}")
+        return {
+            'tables': {},
+            'relations': [],
+            'schema_sql': ""
+        }
+
+# Fonction pour analyser un fichier JSON et extraire le schéma
+def extract_schema_from_json_file(file_path):
+    """Analyse un fichier JSON et extrait le schéma de la base de données"""
+    try:
+        # Lire le contenu du fichier JSON
+        with open(file_path, 'r', encoding='utf-8') as f:
+            json_content = json.load(f)
+
+        # Vérifier si le JSON contient un schéma de base de données
+        if isinstance(json_content, dict) and 'tables' in json_content:
+            # Format attendu: {"tables": {"table1": ["col1", "col2"], ...}, "relations": [{"table1": "t1", "column1": "c1", "table2": "t2", "column2": "c2"}, ...]}
+            tables = json_content.get('tables', {})
+            relations = json_content.get('relations', [])
+
+            # Générer le schéma SQL
+            schema_sql = ""
+            for table, columns in tables.items():
+                schema_sql += f"CREATE TABLE {table} (\n"
+
+                # Ajouter les colonnes
+                for i, column in enumerate(columns):
+                    # Déterminer le type de données en fonction du nom de la colonne
+                    data_type = "INTEGER" if column.endswith("_id") or column == "id" else "TEXT"
+                    primary_key = " PRIMARY KEY" if column == "id" else ""
+                    comma = "," if i < len(columns) - 1 else ""
+                    schema_sql += f"    {column} {data_type}{primary_key}{comma}\n"
+
+                schema_sql += ");\n\n"
+
+            # Ajouter les contraintes de clé étrangère
+            for relation in relations:
+                table1 = relation.get('table1', '')
+                column1 = relation.get('column1', '')
+                table2 = relation.get('table2', '')
+                column2 = relation.get('column2', '')
+
+                if table1 and column1 and table2 and column2:
+                    schema_sql += f"-- Relation: {table1}.{column1} = {table2}.{column2}\n"
+                    schema_sql += f"-- ALTER TABLE {table1} ADD FOREIGN KEY ({column1}) REFERENCES {table2}({column2});\n\n"
+
+            return {
+                'tables': tables,
+                'relations': relations,
+                'schema_sql': schema_sql
+            }
+        elif isinstance(json_content, list) and len(json_content) > 0:
+            # Format attendu: liste d'objets représentant des données
+            # Extraire le schéma à partir des données
+            tables = {}
+            sample_object = json_content[0]
+
+            if isinstance(sample_object, dict):
+                # Créer une table pour ce type d'objet
+                table_name = "data"
+                columns = list(sample_object.keys())
+                tables[table_name] = columns
+
+                # Générer le schéma SQL
+                schema_sql = f"CREATE TABLE {table_name} (\n"
+
+                # Ajouter les colonnes
+                for i, column in enumerate(columns):
+                    # Déterminer le type de données en fonction de la valeur
+                    value = sample_object[column]
+                    if isinstance(value, int):
+                        data_type = "INTEGER"
+                    elif isinstance(value, float):
+                        data_type = "REAL"
+                    else:
+                        data_type = "TEXT"
+
+                    primary_key = " PRIMARY KEY" if column == "id" else ""
+                    comma = "," if i < len(columns) - 1 else ""
+                    schema_sql += f"    {column} {data_type}{primary_key}{comma}\n"
+
+                schema_sql += ");\n\n"
+
+                return {
+                    'tables': tables,
+                    'relations': [],
+                    'schema_sql': schema_sql
+                }
+
+        # Format non reconnu
+        return {
+            'tables': {},
+            'relations': [],
+            'schema_sql': ""
+        }
+    except Exception as e:
+        print(f"Erreur lors de l'analyse du fichier JSON: {str(e)}")
+        return {
+            'tables': {},
+            'relations': [],
+            'schema_sql': ""
+        }
 
 # Fonction pour extraire le schéma de la base de données à partir du texte
 def extract_schema_from_text(text):
@@ -610,11 +800,23 @@ def query_huggingface_api(model_path, inputs, api_key=None):
 # Fonction pour générer une requête SQL à partir d'une description en langage naturel
 def generate_sql_query(description):
     """Génère une requête SQL à partir d'une description en langage naturel en utilisant un modèle pré-entraîné"""
+    # Vérifier si un schéma personnalisé est disponible en session
+    custom_schema = session.get('custom_schema', None)
+
     # Extraire le schéma de la base de données à partir du texte
     extracted_schema_info = extract_schema_from_text(description)
 
-    # Utiliser le schéma extrait ou un schéma par défaut
-    if extracted_schema_info['schema_sql']:
+    # Déterminer quel schéma utiliser (priorité: schéma personnalisé > schéma extrait > schéma par défaut)
+    if custom_schema and custom_schema.get('schema_sql'):
+        schema = custom_schema['schema_sql']
+        print(f"Utilisation du schéma personnalisé importé: {len(custom_schema['tables'])} tables")
+        # Fusionner les relations extraites du texte avec le schéma personnalisé
+        if extracted_schema_info['relations']:
+            for relation in extracted_schema_info['relations']:
+                if relation not in custom_schema['relations']:
+                    custom_schema['relations'].append(relation)
+            print(f"Ajout de {len(extracted_schema_info['relations'])} relations extraites du texte")
+    elif extracted_schema_info['schema_sql']:
         schema = extracted_schema_info['schema_sql']
         print(f"Utilisation du schéma extrait du texte: {len(extracted_schema_info['tables'])} tables")
     else:
@@ -1109,6 +1311,117 @@ def correct_query_route():
     correction_result = correct_sql_query(query)
 
     return jsonify(correction_result)
+
+@app.route('/upload_schema', methods=['POST'])
+def upload_schema():
+    """Route pour uploader un fichier de schéma (SQL ou JSON)"""
+    try:
+        # Vérifier si un fichier a été envoyé
+        if 'file' not in request.files:
+            return jsonify({
+                'success': False,
+                'error': 'Aucun fichier envoyé',
+                'message': 'Veuillez sélectionner un fichier à uploader'
+            })
+
+        file = request.files['file']
+
+        # Vérifier si un fichier a été sélectionné
+        if file.filename == '':
+            return jsonify({
+                'success': False,
+                'error': 'Aucun fichier sélectionné',
+                'message': 'Veuillez sélectionner un fichier à uploader'
+            })
+
+        # Vérifier si le fichier a une extension autorisée
+        if not allowed_file(file.filename):
+            return jsonify({
+                'success': False,
+                'error': 'Extension de fichier non autorisée',
+                'message': f'Les extensions autorisées sont: {", ".join(ALLOWED_EXTENSIONS)}'
+            })
+
+        # Sauvegarder le fichier
+        filename = secure_filename(file.filename)
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(file_path)
+
+        # Extraire le schéma selon le type de fichier
+        schema_info = None
+        if filename.endswith('.sql'):
+            schema_info = extract_schema_from_sql_file(file_path)
+        elif filename.endswith('.json'):
+            schema_info = extract_schema_from_json_file(file_path)
+
+        # Vérifier si le schéma a été extrait avec succès
+        if not schema_info or not schema_info['tables']:
+            return jsonify({
+                'success': False,
+                'error': 'Schéma non extrait',
+                'message': 'Impossible d\'extraire le schéma de la base de données à partir du fichier'
+            })
+
+        # Stocker le schéma en session
+        session['custom_schema'] = schema_info
+        session.modified = True
+
+        # Préparer les informations de schéma pour l'affichage
+        schema_display = {
+            'tables': list(schema_info['tables'].keys()),
+            'columns': {table: columns for table, columns in schema_info['tables'].items()},
+            'relations': [f"{r['table1']}.{r['column1']} = {r['table2']}.{r['column2']}" for r in schema_info['relations']]
+        }
+
+        return jsonify({
+            'success': True,
+            'message': 'Schéma importé avec succès',
+            'schema_info': schema_display,
+            'has_schema': True
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'message': f'Erreur lors de l\'upload du fichier: {str(e)}'
+        })
+
+@app.route('/get_custom_schema', methods=['GET'])
+def get_custom_schema():
+    """Route pour récupérer le schéma personnalisé stocké en session"""
+    schema_info = session.get('custom_schema', {})
+
+    if not schema_info or not schema_info.get('tables'):
+        return jsonify({
+            'success': False,
+            'error': 'Aucun schéma personnalisé',
+            'message': 'Aucun schéma personnalisé n\'a été importé'
+        })
+
+    # Préparer les informations de schéma pour l'affichage
+    schema_display = {
+        'tables': list(schema_info['tables'].keys()),
+        'columns': {table: columns for table, columns in schema_info['tables'].items()},
+        'relations': [f"{r['table1']}.{r['column1']} = {r['table2']}.{r['column2']}" for r in schema_info['relations']]
+    }
+
+    return jsonify({
+        'success': True,
+        'schema_info': schema_display,
+        'has_schema': True
+    })
+
+@app.route('/clear_custom_schema', methods=['POST'])
+def clear_custom_schema():
+    """Route pour effacer le schéma personnalisé stocké en session"""
+    if 'custom_schema' in session:
+        del session['custom_schema']
+        session.modified = True
+
+    return jsonify({
+        'success': True,
+        'message': 'Schéma personnalisé effacé avec succès'
+    })
 
 @app.route('/load_models', methods=['GET'])
 def load_models_route():

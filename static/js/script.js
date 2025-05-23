@@ -1258,4 +1258,165 @@ document.addEventListener("DOMContentLoaded", function () {
       }
     });
   }
+
+  // Gestion de l'importation de schéma
+  function initSchemaUpload() {
+    const schemaForm = document.getElementById("schema-upload-form");
+    const schemaFile = document.getElementById("schema-file");
+    const fileName = document.getElementById("file-name");
+    const uploadResult = document.getElementById("upload-result");
+    const currentSchema = document.getElementById("current-schema");
+    const clearSchemaBtn = document.getElementById("clear-schema");
+
+    if (!schemaForm || !schemaFile) {
+      console.error("Éléments du formulaire de schéma non trouvés");
+      return;
+    }
+
+    // Afficher le nom du fichier sélectionné
+    schemaFile.addEventListener("change", function () {
+      if (this.files.length > 0) {
+        fileName.textContent = this.files[0].name;
+      } else {
+        fileName.textContent = "Aucun fichier sélectionné";
+      }
+    });
+
+    // Gérer l'upload du fichier
+    schemaForm.addEventListener("submit", function (e) {
+      e.preventDefault();
+
+      // Vérifier si un fichier a été sélectionné
+      if (schemaFile.files.length === 0) {
+        uploadResult.className = "upload-result error";
+        uploadResult.textContent =
+          "Veuillez sélectionner un fichier à uploader";
+        return;
+      }
+
+      // Créer un objet FormData
+      const formData = new FormData();
+      formData.append("file", schemaFile.files[0]);
+
+      // Envoyer le fichier au serveur
+      fetch("/upload_schema", {
+        method: "POST",
+        body: formData,
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          if (data.success) {
+            // Afficher le message de succès
+            uploadResult.className = "upload-result success";
+            uploadResult.textContent = data.message;
+
+            // Afficher le schéma importé
+            displaySchema(data.schema_info);
+          } else {
+            // Afficher le message d'erreur
+            uploadResult.className = "upload-result error";
+            uploadResult.textContent = data.message;
+          }
+        })
+        .catch((error) => {
+          console.error("Erreur:", error);
+          uploadResult.className = "upload-result error";
+          uploadResult.textContent = "Erreur lors de l'upload du fichier";
+        });
+    });
+
+    // Charger le schéma existant au chargement de la page
+    fetch("/get_custom_schema")
+      .then((response) => response.json())
+      .then((data) => {
+        if (data.success) {
+          displaySchema(data.schema_info);
+        }
+      })
+      .catch((error) => {
+        console.error("Erreur:", error);
+      });
+
+    // Gérer l'effacement du schéma
+    if (clearSchemaBtn) {
+      clearSchemaBtn.addEventListener("click", function () {
+        fetch("/clear_custom_schema", {
+          method: "POST",
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              // Afficher le message de succès
+              uploadResult.className = "upload-result success";
+              uploadResult.textContent = data.message;
+
+              // Réinitialiser l'affichage du schéma
+              currentSchema.innerHTML =
+                '<div class="empty-schema">Aucun schéma personnalisé importé</div>';
+            }
+          })
+          .catch((error) => {
+            console.error("Erreur:", error);
+            uploadResult.className = "upload-result error";
+            uploadResult.textContent = "Erreur lors de l'effacement du schéma";
+          });
+      });
+    }
+  }
+
+  // Fonction pour afficher le schéma
+  function displaySchema(schemaInfo) {
+    const currentSchema = document.getElementById("current-schema");
+
+    if (!currentSchema) {
+      console.error("Élément current-schema non trouvé");
+      return;
+    }
+
+    // Vérifier si le schéma est vide
+    if (!schemaInfo || !schemaInfo.tables || schemaInfo.tables.length === 0) {
+      currentSchema.innerHTML =
+        '<div class="empty-schema">Aucun schéma personnalisé importé</div>';
+      return;
+    }
+
+    // Construire l'affichage du schéma
+    let schemaHTML = "";
+
+    // Afficher les tables
+    schemaHTML += "<h4>Tables</h4>";
+    schemaInfo.tables.forEach((table) => {
+      schemaHTML += `<div class="schema-table-item">
+        <div class="schema-table-name">${table}</div>
+        <div class="schema-columns">Colonnes: `;
+
+      // Afficher les colonnes de la table
+      if (schemaInfo.columns[table] && schemaInfo.columns[table].length > 0) {
+        schemaHTML += schemaInfo.columns[table].join(", ");
+      } else {
+        schemaHTML += "id, name (par défaut)";
+      }
+
+      schemaHTML += `</div>
+      </div>`;
+    });
+
+    // Afficher les relations
+    if (schemaInfo.relations && schemaInfo.relations.length > 0) {
+      schemaHTML += "<h4>Relations</h4>";
+      schemaHTML += "<div class='schema-relations'>";
+
+      schemaInfo.relations.forEach((relation) => {
+        schemaHTML += `<div class="schema-relation-item">${relation}</div>`;
+      });
+
+      schemaHTML += "</div>";
+    }
+
+    // Mettre à jour l'affichage
+    currentSchema.innerHTML = schemaHTML;
+  }
+
+  // Initialiser l'importation de schéma
+  initSchemaUpload();
 });
