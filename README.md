@@ -4,6 +4,7 @@ SQL Bot est une application web qui permet de générer des requêtes SQL à par
 
 ## Fonctionnalités
 
+- **Analyse des intentions utilisateur** avec des modèles pré-entraînés pour mieux comprendre les besoins
 - **Génération de requêtes SQL** à partir de descriptions en langage naturel
 - **Support multilingue** avec traduction automatique français → anglais
 - **Support de tous les types de requêtes SQL** (SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP)
@@ -24,6 +25,18 @@ L'application est construite avec les technologies suivantes :
 Pour plus de détails sur l'architecture technique, consultez le fichier [DOCUMENTATION_TECHNIQUE.md](DOCUMENTATION_TECHNIQUE.md).
 
 ## Modèles d'IA utilisés
+
+### Modèle de compréhension des intentions
+
+- **Modèle** : facebook/bart-large-mnli
+- **Type** : BART (Bidirectional and Auto-Regressive Transformers)
+- **Fonction** : Analyse des requêtes utilisateur pour déterminer leurs intentions
+
+### Modèle de reformulation
+
+- **Modèle** : facebook/bart-large-cnn
+- **Type** : BART (Bidirectional and Auto-Regressive Transformers)
+- **Fonction** : Reformulation des requêtes pour les rendre plus claires et précises
 
 ### Modèle de traduction
 
@@ -85,24 +98,29 @@ python app_sql_pretrained.py
 
 Pour générer une requête SQL, entrez simplement une description en français :
 
-> "Sélectionne tous les utilisateurs dont l'âge est supérieur à 30 ans et qui ont passé au moins une commande"
+> "Montre-moi les clients qui ont acheté plus de 3 produits le mois dernier"
 
-L'application traduira automatiquement votre description en anglais et générera la requête SQL correspondante :
+L'application analysera vos intentions, reformulera votre demande, la traduira en anglais et générera la requête SQL correspondante :
+
+1. **Analyse des intentions** : "Cette requête concerne la sélection de données avec filtrage et agrégation."
+2. **Reformulation** : "Sélectionner les clients qui ont commandé plus de 3 produits au cours du dernier mois"
+3. **Traduction** : "Select customers who ordered more than 3 products in the last month"
+4. **Génération SQL** :
 
 ```sql
-SELECT u.*
+SELECT u.id, u.name, COUNT(o.id) as total_orders
 FROM users u
 JOIN orders o ON u.id = o.user_id
-WHERE u.age > 30
-GROUP BY u.id
-HAVING COUNT(o.id) >= 1;
+WHERE o.order_date >= DATE_SUB(CURRENT_DATE, INTERVAL 1 MONTH)
+GROUP BY u.id, u.name
+HAVING COUNT(o.id) > 3;
 
 -- Explication de la requête :
--- Cette requête sélectionne tous les utilisateurs dont l'âge est supérieur à 30 ans
+-- Cette requête sélectionne les clients qui ont passé plus de 3 commandes au cours du dernier mois
 -- Tables utilisées: users, orders
--- Filtres appliqués: u.age > 30
--- Groupement par: u.id
--- Condition HAVING: COUNT(o.id) >= 1
+-- Filtres appliqués: o.order_date >= DATE_SUB(CURRENT_DATE, INTERVAL 1 MONTH)
+-- Groupement par: u.id, u.name
+-- Condition HAVING: COUNT(o.id) > 3
 ```
 
 ## Configuration avancée

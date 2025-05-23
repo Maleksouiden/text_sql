@@ -297,8 +297,8 @@ document.addEventListener("DOMContentLoaded", function () {
           detectedTypeSpan.innerHTML = `Type détecté : <strong>${data.detected_type}</strong>`;
         }
 
-        // Afficher la traduction si disponible
-        if (data.translated_text) {
+        // Afficher l'analyse et la traduction si disponibles
+        if (data.understood_text || data.translated_text) {
           // Créer ou récupérer le conteneur de traduction
           let translationContainer = document.getElementById(
             "translation-container"
@@ -312,13 +312,34 @@ document.addEventListener("DOMContentLoaded", function () {
             resultBox.parentNode.insertBefore(translationContainer, resultBox);
           }
 
-          // Afficher la traduction
-          translationContainer.innerHTML = `
-            <div class="translation-info">
-              <h4>Traduction utilisée:</h4>
-              <div class="translation-text">${data.translated_text}</div>
-            </div>
-          `;
+          // Préparer le contenu HTML
+          let contentHTML = "";
+
+          // Ajouter l'analyse des intentions si disponible
+          if (
+            data.understood_text &&
+            data.understood_text !== data.original_text
+          ) {
+            contentHTML += `
+              <div class="understanding-info">
+                <h4>Analyse des intentions:</h4>
+                <div class="understanding-text">${data.understood_text}</div>
+              </div>
+            `;
+          }
+
+          // Ajouter la traduction si disponible
+          if (data.translated_text) {
+            contentHTML += `
+              <div class="translation-info">
+                <h4>Traduction utilisée:</h4>
+                <div class="translation-text">${data.translated_text}</div>
+              </div>
+            `;
+          }
+
+          // Afficher le contenu
+          translationContainer.innerHTML = contentHTML;
         }
 
         // Stocker le résultat SQL pour une utilisation ultérieure avec les graphiques

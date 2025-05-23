@@ -34,7 +34,91 @@ sql_bot/
 
 ## Composants principaux
 
-### 1. Traduction français → anglais
+### 1. Analyse et compréhension des intentions
+
+Le système d'analyse des intentions utilise le modèle BART-MNLI pour comprendre ce que l'utilisateur souhaite faire :
+
+```python
+def understand_user_intent(text):
+    """Analyse et reformule la requête utilisateur pour mieux comprendre ses intentions"""
+    try:
+        # Utiliser le modèle de compréhension des intentions
+        # Nous envoyons la requête avec des hypothèses pour voir laquelle correspond le mieux
+        hypotheses = [
+            "Cette requête concerne la sélection de données.",
+            "Cette requête concerne l'insertion de données.",
+            "Cette requête concerne la mise à jour de données.",
+            "Cette requête concerne la suppression de données.",
+            # ... autres hypothèses ...
+        ]
+
+        # Préparer les paires pour le modèle NLI (Natural Language Inference)
+        pairs = []
+        for hypothesis in hypotheses:
+            pairs.append({"text": text, "hypothesis": hypothesis})
+
+        # Appeler l'API HuggingFace pour la classification
+        result = query_huggingface_api(UNDERSTANDING_MODEL, pairs)
+
+        # Analyser les résultats pour déterminer l'intention principale
+        if result:
+            # Trouver l'hypothèse avec le score d'entailment le plus élevé
+            best_match = None
+            best_score = -1
+
+            for i, item in enumerate(result):
+                if isinstance(item, dict) and "entailment" in item:
+                    entailment_score = item["entailment"]
+                    if entailment_score > best_score:
+                        best_score = entailment_score
+                        best_match = hypotheses[i]
+
+            if best_match:
+                # Reformuler la requête en fonction de l'intention détectée
+                reformulated_text = reformulate_query(text, best_match)
+                return reformulated_text
+
+        # Si aucune intention claire n'est détectée, retourner le texte original
+        return text
+    except Exception as e:
+        print(f"Erreur lors de l'analyse des intentions: {str(e)}")
+        return text
+```
+
+### 2. Reformulation des requêtes
+
+Le système de reformulation utilise le modèle BART-CNN pour reformuler les requêtes en fonction des intentions détectées :
+
+```python
+def reformulate_query(text, intention):
+    """Reformule la requête en fonction de l'intention détectée"""
+    try:
+        # Préparer l'entrée pour le modèle de reformulation
+        prompt = f"Intention: {intention}\nRequête originale: {text}\nReformulation claire et précise pour générer une requête SQL:"
+
+        # Appeler l'API HuggingFace pour la reformulation
+        result = query_huggingface_api(REFORMULATION_MODEL, prompt)
+
+        if result:
+            # Extraire le texte reformulé
+            if isinstance(result, list) and len(result) > 0:
+                if "summary_text" in result[0]:
+                    reformulated = result[0]["summary_text"]
+                    return reformulated
+                elif "generated_text" in result[0]:
+                    reformulated = result[0]["generated_text"]
+                    return reformulated
+
+        # En cas d'échec, enrichir la requête avec des mots-clés basés sur l'intention
+        # ... logique de secours ...
+
+        return text
+    except Exception as e:
+        print(f"Erreur lors de la reformulation: {str(e)}")
+        return text
+```
+
+### 3. Traduction français → anglais
 
 Le système de traduction est un composant clé qui permet à l'application de comprendre les requêtes en français. Il utilise deux approches complémentaires :
 
@@ -46,7 +130,7 @@ def translate_fr_to_en(text):
     try:
         # Utiliser l'API HuggingFace pour la traduction
         result = query_huggingface_api(TRANSLATION_MODEL, text)
-        
+
         if result:
             # Extraire le texte traduit
             if isinstance(result, list) and len(result) > 0:
@@ -86,15 +170,15 @@ def fallback_translate_fr_to_en(text):
         "où": "where",
         # ... autres traductions ...
     }
-    
+
     # Remplacer les mots-clés français par leurs équivalents anglais
     translated_text = text.lower()
     for fr_word, en_word in translation_dict.items():
         translated_text = translated_text.replace(fr_word, en_word)
-    
+
     # Ajouter un préfixe pour indiquer au modèle qu'il s'agit d'une requête SQL
     translated_text = "Generate SQL query: " + translated_text
-    
+
     return translated_text
 ```
 
@@ -114,7 +198,7 @@ def generate_sql_query(description):
         age INTEGER,
         created_at TIMESTAMP
     );
-    
+
     CREATE TABLE orders (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
@@ -123,7 +207,7 @@ def generate_sql_query(description):
         order_date TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id)
     );
-    
+
     CREATE TABLE products (
         id INTEGER PRIMARY KEY,
         name TEXT,
@@ -132,24 +216,24 @@ def generate_sql_query(description):
         stock INTEGER
     );
     """
-    
+
     # Traduire la description en anglais
     english_description = translate_fr_to_en(description)
-    
+
     # Préparer l'entrée pour le modèle
     input_text = f"Schema: {schema}\nQuestion: {english_description}\nSQL:"
-    
+
     # Utiliser l'API HuggingFace
     result = query_huggingface_api(MODEL_PATHS["text-to-sql"], input_text)
-    
+
     # ... traitement du résultat ...
-    
+
     # Ajouter une explication
     explanation = generate_explanation(sql_query)
-    
+
     # Formater la requête pour une meilleure lisibilité
     formatted_query = sqlparse.format(sql_query, reindent=True, keyword_case='upper')
-    
+
     return formatted_query + explanation, sql_type, {}
 ```
 
@@ -161,20 +245,20 @@ Le système de correction de requêtes SQL utilise le modèle pré-entraîné `m
 def correct_sql_query(query):
     """Corrige une requête SQL en utilisant un modèle pré-entraîné"""
     # ... initialisation ...
-    
+
     try:
         # Utiliser l'API HuggingFace
         result = query_huggingface_api(MODEL_PATHS["sql-correction"], f"correct: {query}")
-        
+
         # ... traitement du résultat ...
-        
+
         # Analyser les différences pour générer des erreurs et suggestions
         if corrected_query != query:
             errors, suggestions = analyze_query_differences(query, corrected_query)
-        
+
         # Ajouter des suggestions générales
         add_general_suggestions(query, suggestions)
-        
+
         return {
             "original": query,
             "corrected_query": corrected_query,
@@ -198,12 +282,35 @@ Le JavaScript gère les interactions utilisateur, les appels AJAX vers le serveu
 
 ## Modèles d'IA utilisés
 
+### Modèle de compréhension des intentions
+
+- **Nom** : facebook/bart-large-mnli
+- **Type** : BART (Bidirectional and Auto-Regressive Transformers)
+- **Taille** : ~400M paramètres
+- **Entraînement** : Fine-tuné sur le jeu de données MultiNLI pour la tâche d'inférence en langage naturel (NLI)
+- **Fonction** : Analyse les requêtes utilisateur pour déterminer leurs intentions (sélection, insertion, mise à jour, etc.)
+- **Performances** : Excellente capacité à comprendre les relations d'implication entre phrases
+- **Forces** : Très bon à détecter les intentions implicites et à comprendre le contexte
+- **Faiblesses** : Peut être sensible à la formulation exacte des hypothèses
+
+### Modèle de reformulation
+
+- **Nom** : facebook/bart-large-cnn
+- **Type** : BART (Bidirectional and Auto-Regressive Transformers)
+- **Taille** : ~400M paramètres
+- **Entraînement** : Fine-tuné sur le jeu de données CNN/Daily Mail pour la tâche de résumé de texte
+- **Fonction** : Reformule les requêtes utilisateur pour les rendre plus claires et précises
+- **Performances** : Excellente capacité à reformuler tout en préservant le sens
+- **Forces** : Génère des reformulations concises et bien structurées
+- **Faiblesses** : Peut parfois simplifier excessivement des requêtes complexes
+
 ### Modèle de traduction
 
 - **Nom** : Helsinki-NLP/opus-mt-fr-en
 - **Type** : Seq2Seq (Transformer)
 - **Taille** : ~298M paramètres
 - **Entraînement** : Entraîné sur le corpus OPUS, qui contient des textes parallèles français-anglais de diverses sources (documents officiels de l'UE, sous-titres de films, documentation technique, etc.)
+- **Fonction** : Traduction du français vers l'anglais
 - **Performances** : Score BLEU de ~38 sur le jeu de test WMT14 fr-en
 - **Forces** : Excellente qualité de traduction pour les textes techniques et formels
 - **Faiblesses** : Peut avoir des difficultés avec les expressions idiomatiques ou le langage très informel
@@ -215,6 +322,7 @@ Le JavaScript gère les interactions utilisateur, les appels AJAX vers le serveu
 - **Base** : t5-base fine-tuné
 - **Taille** : ~220M paramètres
 - **Entraînement** : Fine-tuné sur des paires de descriptions en langage naturel et requêtes SQL correspondantes, avec schémas de tables
+- **Fonction** : Génération de requêtes SQL à partir de descriptions en anglais
 - **Jeux de données** : Spider, WikiSQL et autres jeux de données de text-to-SQL
 - **Performances** : Précision d'environ 80% sur des requêtes SQL simples à modérément complexes
 - **Forces** : Bonne compréhension des intentions et génération de requêtes SQL valides
@@ -227,6 +335,7 @@ Le JavaScript gère les interactions utilisateur, les appels AJAX vers le serveu
 - **Base** : t5-base
 - **Taille** : ~220M paramètres
 - **Entraînement** : Fine-tuné sur des paires de requêtes SQL incorrectes et leurs versions corrigées
+- **Fonction** : Correction des erreurs de syntaxe dans les requêtes SQL
 - **Performances** : Détection efficace des erreurs courantes et suggestions pertinentes
 - **Forces** : Bonne capacité à corriger les erreurs de syntaxe et à suggérer des améliorations
 - **Faiblesses** : Peut avoir des difficultés avec des erreurs très subtiles ou des dialectes SQL spécifiques
@@ -235,12 +344,14 @@ Le JavaScript gère les interactions utilisateur, les appels AJAX vers le serveu
 
 1. **Entrée utilisateur** : L'utilisateur entre une description en français de la requête SQL souhaitée
 2. **Requête AJAX** : Le frontend envoie la description au serveur Flask via une requête AJAX
-3. **Traduction** : Le serveur traduit la description en anglais
-4. **Génération SQL** : La description traduite est envoyée à l'API HuggingFace pour générer la requête SQL
-5. **Post-traitement** : Le serveur ajoute des explications et des suggestions à la requête générée
-6. **Réponse** : Le résultat est renvoyé au frontend sous forme de JSON
-7. **Affichage** : Le frontend affiche la requête générée, la traduction utilisée et les explications
-8. **Historique** : La requête est ajoutée à l'historique dans la session Flask
+3. **Analyse des intentions** : Le serveur utilise le modèle BART-MNLI pour comprendre les intentions de l'utilisateur
+4. **Reformulation** : La requête est reformulée pour être plus claire et précise en fonction des intentions détectées
+5. **Traduction** : Le serveur traduit la description reformulée en anglais
+6. **Génération SQL** : La description traduite est envoyée à l'API HuggingFace pour générer la requête SQL
+7. **Post-traitement** : Le serveur ajoute des explications et des suggestions à la requête générée
+8. **Réponse** : Le résultat est renvoyé au frontend sous forme de JSON
+9. **Affichage** : Le frontend affiche la requête générée, l'analyse des intentions, la traduction utilisée et les explications
+10. **Historique** : La requête est ajoutée à l'historique dans la session Flask
 
 ## API et endpoints
 
@@ -249,6 +360,7 @@ Le JavaScript gère les interactions utilisateur, les appels AJAX vers le serveu
 Endpoint principal pour générer des requêtes SQL à partir de descriptions en langage naturel.
 
 **Entrée** :
+
 ```json
 {
   "text": "Sélectionne tous les utilisateurs dont l'âge est supérieur à 30"
@@ -256,6 +368,7 @@ Endpoint principal pour générer des requêtes SQL à partir de descriptions en
 ```
 
 **Sortie** :
+
 ```json
 {
   "result": "SELECT * FROM users WHERE age > 30;\n\n-- Explication de la requête :\n-- Cette requête sélectionne tous les utilisateurs dont l'âge est supérieur à 30",
@@ -273,6 +386,7 @@ Endpoint principal pour générer des requêtes SQL à partir de descriptions en
 Endpoint pour corriger des requêtes SQL existantes.
 
 **Entrée** :
+
 ```json
 {
   "query": "SLECT * FORM users WEHRE age > 30"
@@ -280,6 +394,7 @@ Endpoint pour corriger des requêtes SQL existantes.
 ```
 
 **Sortie** :
+
 ```json
 {
   "original": "SLECT * FORM users WEHRE age > 30",

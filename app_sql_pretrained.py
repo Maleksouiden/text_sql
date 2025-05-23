@@ -24,8 +24,122 @@ pipelines = {}
 # Clé API HuggingFace (à remplacer par votre propre clé si nécessaire)
 HUGGINGFACE_API_KEY = None  # Mettre votre clé API ici si vous en avez une
 
-# Modèle de traduction
+# Modèles pré-entraînés
 TRANSLATION_MODEL = "Helsinki-NLP/opus-mt-fr-en"
+UNDERSTANDING_MODEL = "facebook/bart-large-mnli"  # Modèle pour la compréhension des intentions
+REFORMULATION_MODEL = "facebook/bart-large-cnn"   # Modèle pour la reformulation des requêtes
+
+# Fonction pour comprendre et reformuler les requêtes utilisateur
+def understand_user_intent(text):
+    """Analyse et reformule la requête utilisateur pour mieux comprendre ses intentions"""
+    try:
+        # Utiliser le modèle de compréhension des intentions
+        # Nous envoyons la requête avec des hypothèses pour voir laquelle correspond le mieux
+        hypotheses = [
+            "Cette requête concerne la sélection de données.",
+            "Cette requête concerne l'insertion de données.",
+            "Cette requête concerne la mise à jour de données.",
+            "Cette requête concerne la suppression de données.",
+            "Cette requête concerne la création de structures de données.",
+            "Cette requête concerne la modification de structures de données.",
+            "Cette requête concerne la suppression de structures de données.",
+            "Cette requête concerne l'agrégation de données.",
+            "Cette requête concerne le filtrage de données.",
+            "Cette requête concerne le tri de données.",
+            "Cette requête concerne la jointure de tables.",
+            "Cette requête concerne des statistiques sur les données."
+        ]
+
+        # Préparer les paires pour le modèle NLI (Natural Language Inference)
+        pairs = []
+        for hypothesis in hypotheses:
+            pairs.append({"text": text, "hypothesis": hypothesis})
+
+        # Appeler l'API HuggingFace pour la classification
+        result = query_huggingface_api(UNDERSTANDING_MODEL, pairs)
+
+        # Analyser les résultats pour déterminer l'intention principale
+        if result:
+            # Trouver l'hypothèse avec le score d'entailment le plus élevé
+            best_match = None
+            best_score = -1
+
+            for i, item in enumerate(result):
+                if isinstance(item, dict) and "entailment" in item:
+                    entailment_score = item["entailment"]
+                    if entailment_score > best_score:
+                        best_score = entailment_score
+                        best_match = hypotheses[i]
+
+            if best_match:
+                print(f"Intention détectée: {best_match} (score: {best_score})")
+
+                # Reformuler la requête en fonction de l'intention détectée
+                reformulated_text = reformulate_query(text, best_match)
+                return reformulated_text
+
+        # Si aucune intention claire n'est détectée ou en cas d'erreur, retourner le texte original
+        return text
+    except Exception as e:
+        print(f"Erreur lors de l'analyse des intentions: {str(e)}")
+        return text
+
+# Fonction pour reformuler la requête en fonction de l'intention détectée
+def reformulate_query(text, intention):
+    """Reformule la requête en fonction de l'intention détectée"""
+    try:
+        # Préparer l'entrée pour le modèle de reformulation
+        prompt = f"Intention: {intention}\nRequête originale: {text}\nReformulation claire et précise pour générer une requête SQL:"
+
+        # Appeler l'API HuggingFace pour la reformulation
+        result = query_huggingface_api(REFORMULATION_MODEL, prompt)
+
+        if result:
+            # Extraire le texte reformulé
+            if isinstance(result, list) and len(result) > 0:
+                if "summary_text" in result[0]:
+                    reformulated = result[0]["summary_text"]
+                    print(f"Requête reformulée: {reformulated}")
+                    return reformulated
+                elif "generated_text" in result[0]:
+                    reformulated = result[0]["generated_text"]
+                    print(f"Requête reformulée: {reformulated}")
+                    return reformulated
+
+        # En cas d'échec, enrichir la requête avec des mots-clés basés sur l'intention
+        keywords = {
+            "sélection": ["sélectionner", "afficher", "montrer", "lister", "obtenir"],
+            "insertion": ["insérer", "ajouter", "créer une entrée"],
+            "mise à jour": ["mettre à jour", "modifier", "changer"],
+            "suppression": ["supprimer", "effacer", "enlever"],
+            "création": ["créer", "définir", "établir"],
+            "agrégation": ["compter", "somme", "moyenne", "minimum", "maximum", "grouper"],
+            "filtrage": ["où", "condition", "filtre", "limiter à"],
+            "tri": ["trier", "ordonner", "classer"],
+            "jointure": ["joindre", "combiner", "relier"]
+        }
+
+        # Identifier les mots-clés pertinents en fonction de l'intention
+        relevant_keywords = []
+        for key, words in keywords.items():
+            if key.lower() in intention.lower():
+                relevant_keywords.extend(words)
+
+        # Si des mots-clés pertinents sont trouvés, les ajouter à la requête
+        if relevant_keywords:
+            # Vérifier si ces mots-clés sont déjà présents dans la requête
+            missing_keywords = [kw for kw in relevant_keywords if kw.lower() not in text.lower()]
+
+            if missing_keywords:
+                # Ajouter les mots-clés manquants à la requête
+                enhanced_text = f"{text} (Intention: {', '.join(missing_keywords[:2])})"
+                return enhanced_text
+
+        # Si aucune reformulation n'est possible, retourner le texte original
+        return text
+    except Exception as e:
+        print(f"Erreur lors de la reformulation: {str(e)}")
+        return text
 
 # Fonction pour traduire du français vers l'anglais
 def translate_fr_to_en(text):
@@ -298,9 +412,13 @@ def generate_sql_query(description):
     );
     """
 
-    # Traduire la description en anglais
-    english_description = translate_fr_to_en(description)
+    # Analyser et reformuler la requête pour mieux comprendre les intentions
+    understood_description = understand_user_intent(description)
     print(f"Description originale: {description}")
+    print(f"Description analysée: {understood_description}")
+
+    # Traduire la description reformulée en anglais
+    english_description = translate_fr_to_en(understood_description)
     print(f"Description traduite: {english_description}")
 
     # Préparer l'entrée pour le modèle
@@ -661,8 +779,11 @@ def process():
     data = request.json
     text = data.get('text', '')
 
+    # Analyser et reformuler la requête pour mieux comprendre les intentions
+    understood_text = understand_user_intent(text)
+
     # Traduire la description en anglais pour le débogage
-    english_text = translate_fr_to_en(text)
+    english_text = translate_fr_to_en(understood_text)
 
     # Générer la requête SQL
     result, sql_type, advanced_options = generate_sql_query(text)
@@ -680,6 +801,7 @@ def process():
         'has_advanced_options': has_advanced_options,
         'history': session.get('query_history', []),
         'original_text': text,
+        'understood_text': understood_text,
         'translated_text': english_text
     })
 
